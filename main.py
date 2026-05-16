@@ -3,10 +3,12 @@ import re
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QPushButton, QLineEdit, QLabel,
-    QStackedWidget, QComboBox, QScrollArea, QFrame, QSplitter
+    QStackedWidget, QComboBox, QFrame, QSplitter, QProgressBar
 )
-from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QSize
+from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEnginePage
 from scraper_api import AliceScraper
 
 class FetchWorker(QThread):
@@ -29,16 +31,16 @@ class FetchWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AliceSW 阅读器 - 专属你的舒适体验")
-        self.resize(1100, 750)
+        self.setWindowTitle("AliceSW 阅读器")
+        self.resize(1200, 800)
         self.scraper = AliceScraper()
 
         self.setup_ui()
         self.apply_styles()
 
-        self._active_workers = [] # keep references to avoid GC issues
+        self._active_workers = []
 
-        # Load default category
+        # Initial load
         self.load_category()
 
     def setup_ui(self):
@@ -48,169 +50,308 @@ class MainWindow(QMainWindow):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
 
-        # Left Sidebar
+        # Use QSplitter for resizable sidebars
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_layout.addWidget(self.splitter)
+
+        # === Left Sidebar (Navigation) ===
         self.sidebar = QFrame()
         self.sidebar.setObjectName("sidebar")
-        self.sidebar.setFixedWidth(250)
         self.sidebar_layout = QVBoxLayout(self.sidebar)
-        self.sidebar_layout.setContentsMargins(15, 20, 15, 20)
+        self.sidebar_layout.setContentsMargins(20, 25, 20, 20)
+        self.sidebar_layout.setSpacing(15)
 
-        # Search
+        title_lbl = QLabel("AliceSW")
+        title_lbl.setObjectName("appTitle")
+        self.sidebar_layout.addWidget(title_lbl)
+
+        # Search Box
+        self.search_layout = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("搜索小说...")
+        self.search_input.setPlaceholderText("搜书名/作者...")
         self.search_input.returnPressed.connect(self.search_novels)
         self.search_btn = QPushButton("搜索")
+        self.search_btn.setObjectName("searchBtn")
         self.search_btn.clicked.connect(self.search_novels)
+        self.search_layout.addWidget(self.search_input)
+        self.search_layout.addWidget(self.search_btn)
+        self.sidebar_layout.addLayout(self.search_layout)
 
         # Categories
-        self.category_combo = QComboBox()
-        # Adding some popular categories
+        cat_lbl = QLabel("频道分类")
+        cat_lbl.setObjectName("sectionTitle")
+        self.sidebar_layout.addWidget(cat_lbl)
+
+        self.category_list = QListWidget()
+        self.category_list.setObjectName("categoryList")
         categories = {
-            "都市": "64", "校园": "61", "玄幻": "62", "乱伦": "65",
-            "同人": "73", "武侠": "68", "纯爱": "19", "经典": "79"
+            "都市生活": "64", "青春校园": "61", "玄幻魔法": "62", "禁忌之恋": "65",
+            "同人小说": "73", "武侠修仙": "68", "纯爱唯美": "19", "经典名著": "79"
         }
         for name, cid in categories.items():
-            self.category_combo.addItem(name, cid)
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, cid)
+            self.category_list.addItem(item)
 
-        self.category_combo.currentIndexChanged.connect(self.load_category)
+        self.category_list.setCurrentRow(0)
+        self.category_list.itemClicked.connect(self.load_category)
+        self.sidebar_layout.addWidget(self.category_list)
 
-        self.back_btn = QPushButton("返回书库")
-        self.back_btn.clicked.connect(self.show_book_list)
-        self.back_btn.hide()
+        # Loading Indicator
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0) # Indeterminate
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(3)
+        self.progress_bar.hide()
+        self.sidebar_layout.addWidget(self.progress_bar)
 
-        self.sidebar_layout.addWidget(QLabel("<h2>AliceSW 阅读器</h2>"))
-        self.sidebar_layout.addSpacing(20)
-        self.sidebar_layout.addWidget(QLabel("<b>搜索</b>"))
-        self.sidebar_layout.addWidget(self.search_input)
-        self.sidebar_layout.addWidget(self.search_btn)
-        self.sidebar_layout.addSpacing(20)
-        self.sidebar_layout.addWidget(QLabel("<b>分类浏览</b>"))
-        self.sidebar_layout.addWidget(self.category_combo)
-        self.sidebar_layout.addStretch()
-        self.sidebar_layout.addWidget(self.back_btn)
+        # === Right Content Area ===
+        self.content_container = QFrame()
+        self.content_container.setObjectName("contentContainer")
+        self.content_layout = QVBoxLayout(self.content_container)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Right Content Area (Stacked Widget)
         self.content_stack = QStackedWidget()
+        self.content_layout.addWidget(self.content_stack)
 
-        # Page 1: Book List
+        # --- Page 1: Book List ---
+        self.page_books = QWidget()
+        self.layout_books = QVBoxLayout(self.page_books)
+        self.layout_books.setContentsMargins(30, 30, 30, 30)
+
+        self.books_header = QLabel("推荐列表")
+        self.books_header.setObjectName("pageHeader")
+        self.layout_books.addWidget(self.books_header)
+
         self.book_list_widget = QListWidget()
         self.book_list_widget.setObjectName("bookList")
         self.book_list_widget.itemDoubleClicked.connect(self.load_novel_details)
-        self.content_stack.addWidget(self.book_list_widget)
+        self.layout_books.addWidget(self.book_list_widget)
+        self.content_stack.addWidget(self.page_books)
 
-        # Page 2: Chapter List
-        self.chapter_page = QWidget()
-        self.chapter_layout = QVBoxLayout(self.chapter_page)
+        # --- Page 2: Chapter List ---
+        self.page_chapters = QWidget()
+        self.layout_chapters = QVBoxLayout(self.page_chapters)
+        self.layout_chapters.setContentsMargins(30, 30, 30, 30)
+
+        self.chapter_header_layout = QHBoxLayout()
+        self.btn_back_to_books = QPushButton("← 返回")
+        self.btn_back_to_books.setObjectName("iconBtn")
+        self.btn_back_to_books.clicked.connect(lambda: self.content_stack.setCurrentIndex(0))
         self.novel_title_label = QLabel("小说标题")
-        self.novel_title_label.setStyleSheet("font-size: 24px; font-weight: bold; margin: 10px;")
+        self.novel_title_label.setObjectName("pageHeader")
+        self.chapter_header_layout.addWidget(self.btn_back_to_books)
+        self.chapter_header_layout.addWidget(self.novel_title_label)
+        self.chapter_header_layout.addStretch()
+        self.layout_chapters.addLayout(self.chapter_header_layout)
+
         self.chapter_list_widget = QListWidget()
         self.chapter_list_widget.setObjectName("chapterList")
         self.chapter_list_widget.itemDoubleClicked.connect(self.read_chapter)
-        self.chapter_layout.addWidget(self.novel_title_label)
-        self.chapter_layout.addWidget(self.chapter_list_widget)
-        self.content_stack.addWidget(self.chapter_page)
+        self.layout_chapters.addWidget(self.chapter_list_widget)
+        self.content_stack.addWidget(self.page_chapters)
 
-        # Page 3: Reader (WebEngineView)
-        self.reader_page = QWidget()
-        self.reader_layout = QVBoxLayout(self.reader_page)
-        self.reader_layout.setContentsMargins(0, 0, 0, 0)
+        # --- Page 3: Reader View ---
+        self.page_reader = QWidget()
+        self.layout_reader = QVBoxLayout(self.page_reader)
+        self.layout_reader.setContentsMargins(0, 0, 0, 0)
+        self.layout_reader.setSpacing(0)
 
-        # Reader Toolbar
+        # Toolbar
         self.reader_toolbar = QFrame()
         self.reader_toolbar.setObjectName("readerToolbar")
         self.toolbar_layout = QHBoxLayout(self.reader_toolbar)
-        self.btn_chapters = QPushButton("☰ 目录")
-        self.btn_chapters.clicked.connect(self.show_chapter_list)
-        self.btn_font_up = QPushButton("A+")
-        self.btn_font_up.clicked.connect(lambda: self.adjust_font(2))
+        self.toolbar_layout.setContentsMargins(20, 10, 20, 10)
+
+        self.btn_back_to_chapters = QPushButton("← 目录")
+        self.btn_back_to_chapters.setObjectName("toolBtn")
+        self.btn_back_to_chapters.clicked.connect(lambda: self.content_stack.setCurrentIndex(1))
+
         self.btn_font_down = QPushButton("A-")
+        self.btn_font_down.setObjectName("toolBtn")
         self.btn_font_down.clicked.connect(lambda: self.adjust_font(-2))
-        self.btn_theme = QPushButton("切换护眼模式")
+        self.btn_font_up = QPushButton("A+")
+        self.btn_font_up.setObjectName("toolBtn")
+        self.btn_font_up.clicked.connect(lambda: self.adjust_font(2))
+
+        self.btn_theme = QPushButton("☀️/🌙 护眼")
+        self.btn_theme.setObjectName("toolBtn")
         self.btn_theme.clicked.connect(self.toggle_theme)
 
-        self.toolbar_layout.addWidget(self.btn_chapters)
+        self.reader_status_label = QLabel("")
+        self.reader_status_label.setObjectName("statusLabel")
+
+        self.toolbar_layout.addWidget(self.btn_back_to_chapters)
         self.toolbar_layout.addStretch()
+        self.toolbar_layout.addWidget(self.reader_status_label)
         self.toolbar_layout.addWidget(self.btn_font_down)
         self.toolbar_layout.addWidget(self.btn_font_up)
         self.toolbar_layout.addWidget(self.btn_theme)
 
+        # WebEngine
         self.webview = QWebEngineView()
+        self.webview.loadStarted.connect(lambda: self.reader_status_label.setText("正在加载网页内容..."))
         self.webview.loadFinished.connect(self.on_load_finished)
 
-        self.reader_layout.addWidget(self.reader_toolbar)
-        self.reader_layout.addWidget(self.webview)
-        self.content_stack.addWidget(self.reader_page)
+        self.layout_reader.addWidget(self.reader_toolbar)
+        self.layout_reader.addWidget(self.webview)
+        self.content_stack.addWidget(self.page_reader)
 
-        # Add to main layout
-        self.main_layout.addWidget(self.sidebar)
-        self.main_layout.addWidget(self.content_stack)
+        # Assemble Splitter
+        self.splitter.addWidget(self.sidebar)
+        self.splitter.addWidget(self.content_container)
+        self.splitter.setSizes([250, 950])
+        self.splitter.setCollapsible(0, False)
 
         # State
-        self.current_font_size = 20
+        self.current_font_size = 22
         self.is_dark_mode = False
 
     def apply_styles(self):
         style = """
+        /* Main Window */
         QMainWindow {
-            background-color: #f5f6fa;
+            background-color: #f0f2f5;
         }
+
+        /* Sidebar */
         #sidebar {
             background-color: #ffffff;
-            border-right: 1px solid #dcdde1;
+            border-right: 1px solid #e1e4e8;
         }
-        QLabel {
-            color: #2f3640;
+        #appTitle {
+            font-size: 26px;
+            font-weight: 900;
+            color: #1a73e8;
+            padding-bottom: 10px;
         }
-        QLineEdit, QComboBox {
-            padding: 8px;
-            border: 1px solid #dcdde1;
-            border-radius: 4px;
-            background-color: #f5f6fa;
+        #sectionTitle {
+            font-size: 14px;
+            font-weight: bold;
+            color: #5f6368;
+            margin-top: 15px;
+            margin-bottom: 5px;
         }
-        QPushButton {
-            background-color: #00a8ff;
+
+        /* Inputs & Buttons */
+        QLineEdit {
+            padding: 10px 15px;
+            border: 1px solid #dadce0;
+            border-radius: 6px;
+            background-color: #f8f9fa;
+            font-size: 14px;
+        }
+        QLineEdit:focus {
+            border: 1px solid #1a73e8;
+            background-color: #ffffff;
+        }
+        #searchBtn {
+            background-color: #1a73e8;
             color: white;
             border: none;
-            padding: 8px 15px;
-            border-radius: 4px;
+            border-radius: 6px;
+            padding: 10px 15px;
             font-weight: bold;
         }
-        QPushButton:hover {
-            background-color: #0097e6;
+        #searchBtn:hover {
+            background-color: #1557b0;
         }
-        QPushButton:disabled {
-            background-color: #b2bec3;
-        }
+
+        /* Lists */
         QListWidget {
             border: none;
-            background-color: #f5f6fa;
-            outline: 0;
+            background-color: transparent;
+            outline: none;
         }
-        QListWidget::item {
-            padding: 15px;
-            border-bottom: 1px solid #e1e2e6;
+        #categoryList::item {
+            padding: 12px 15px;
+            border-radius: 6px;
+            margin-bottom: 4px;
+            color: #3c4043;
+            font-size: 15px;
+        }
+        #categoryList::item:hover {
+            background-color: #f1f3f4;
+        }
+        #categoryList::item:selected {
+            background-color: #e8f0fe;
+            color: #1a73e8;
+            font-weight: bold;
+        }
+
+        #bookList::item, #chapterList::item {
+            padding: 18px;
+            border-bottom: 1px solid #e8eaed;
+            color: #202124;
             font-size: 16px;
+            background-color: #ffffff;
+            margin-bottom: 8px;
+            border-radius: 8px;
         }
-        QListWidget::item:hover {
-            background-color: #e8e9ed;
+        #bookList::item:hover, #chapterList::item:hover {
+            background-color: #f8f9fa;
+            border: 1px solid #dadce0;
         }
-        QListWidget::item:selected {
-            background-color: #00a8ff;
-            color: white;
+
+        /* Headers */
+        #pageHeader {
+            font-size: 24px;
+            font-weight: bold;
+            color: #202124;
+            padding-bottom: 15px;
         }
+
+        /* Reader Toolbar */
         #readerToolbar {
             background-color: #ffffff;
-            border-bottom: 1px solid #dcdde1;
-            padding: 5px;
+            border-bottom: 1px solid #e1e4e8;
+        }
+        #toolBtn, #iconBtn {
+            background-color: transparent;
+            color: #5f6368;
+            border: 1px solid #dadce0;
+            border-radius: 18px;
+            padding: 8px 16px;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        #toolBtn:hover, #iconBtn:hover {
+            background-color: #f1f3f4;
+            color: #202124;
+        }
+        #statusLabel {
+            color: #1a73e8;
+            font-weight: bold;
+            padding-right: 15px;
+        }
+
+        /* Scrollbars */
+        QScrollBar:vertical {
+            border: none;
+            background: #f1f3f4;
+            width: 8px;
+            border-radius: 4px;
+        }
+        QScrollBar::handle:vertical {
+            background: #bdc1c6;
+            border-radius: 4px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background: #80868b;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0px;
         }
         """
         self.setStyleSheet(style)
 
     def execute_worker(self, target_func, callback, *args):
+        self.progress_bar.show()
         worker = FetchWorker(target_func, *args)
         self._active_workers.append(worker)
 
         def cleanup_callback(result):
+            self.progress_bar.hide()
             callback(result)
             self._active_workers.remove(worker)
             worker.deleteLater()
@@ -219,30 +360,37 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def load_category(self):
+        item = self.category_list.currentItem()
+        if not item: return
+        cid = item.data(Qt.ItemDataRole.UserRole)
+        self.books_header.setText(f"{item.text()} 推荐")
+
         self.book_list_widget.clear()
-        self.book_list_widget.addItem("加载中...")
-        cid = self.category_combo.currentData()
         self.execute_worker(self.scraper.get_category_list, self.display_novels, cid)
-        self.show_book_list()
+        self.content_stack.setCurrentIndex(0)
 
     def search_novels(self):
         keyword = self.search_input.text().strip()
         if not keyword: return
 
+        self.books_header.setText(f"搜索结果: {keyword}")
+        self.category_list.clearSelection()
+
         self.book_list_widget.clear()
-        self.book_list_widget.addItem("搜索中...")
         self.execute_worker(self.scraper.search_novels, self.display_novels, keyword)
-        self.show_book_list()
+        self.content_stack.setCurrentIndex(0)
 
     def display_novels(self, novels):
         self.book_list_widget.clear()
         if not novels:
-            self.book_list_widget.addItem("未找到小说")
+            item = QListWidgetItem("暂无数据，请尝试其他分类或关键词。")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.book_list_widget.addItem(item)
             return
 
         for novel in novels:
             title = novel['title']
-            if 'category' in novel:
+            if 'category' in novel and novel['category']:
                 title = f"[{novel['category']}] {title}"
 
             item = QListWidgetItem(title)
@@ -260,16 +408,16 @@ class MainWindow(QMainWindow):
 
         self.novel_title_label.setText(item.text())
         self.chapter_list_widget.clear()
-        self.chapter_list_widget.addItem("加载目录中...")
         self.content_stack.setCurrentIndex(1)
-        self.back_btn.show()
 
         self.execute_worker(self.scraper.get_novel_chapters, self.display_chapters, novel_id)
 
     def display_chapters(self, chapters):
         self.chapter_list_widget.clear()
         if not chapters:
-            self.chapter_list_widget.addItem("未找到目录")
+            item = QListWidgetItem("获取目录失败。网站可能有安全防护，稍后再试。")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.chapter_list_widget.addItem(item)
             return
 
         for chapter in chapters:
@@ -287,76 +435,108 @@ class MainWindow(QMainWindow):
 
     def on_load_finished(self, ok):
         if ok:
+            self.reader_status_label.setText("排版优化中...")
             self.apply_reader_style()
+        else:
+            self.reader_status_label.setText("加载失败！")
 
     def apply_reader_style(self):
-        # Inject JavaScript to hide everything except the article text
-        # and style the reading area to be clean and readable
-
-        bg_color = "#2c3e50" if self.is_dark_mode else "#fdf6e3"
-        text_color = "#ecf0f1" if self.is_dark_mode else "#2c3e50"
+        # 优化色彩配置，确保文字和背景高对比度
+        if self.is_dark_mode:
+            bg_color = "#121212"  # 深色背景
+            text_color = "#E0E0E0"  # 浅灰/白字体，防刺眼
+            title_color = "#BB86FC" # 紫色/显眼颜色做标题
+        else:
+            bg_color = "#F4F1EA"  # 护眼牛皮纸/米黄底色
+            text_color = "#333333"  # 深灰字体，非纯黑以护眼
+            title_color = "#8A2B2B" # 暗红色做标题点缀
 
         js_code = f"""
         (function() {{
-            // Attempt to find the main content
-            var content = document.querySelector('.article-content') || document.querySelector('.content') || document.getElementById('content');
-            if(!content) return;
+            try {{
+                // 获取正文内容（尽可能匹配小说的正文容器）
+                var content = document.querySelector('.article-content') ||
+                              document.querySelector('.content') ||
+                              document.querySelector('#content') ||
+                              document.querySelector('.book_content') ||
+                              document.body;
 
-            // Create a clean container
-            var cleanContainer = document.createElement('div');
-            cleanContainer.innerHTML = content.innerHTML;
+                // 获取标题
+                var titleNode = document.querySelector('h1') || document.querySelector('.title');
+                var titleText = titleNode ? titleNode.innerText : '';
 
-            // Clear body and append clean container
-            document.body.innerHTML = '';
-            document.body.appendChild(cleanContainer);
+                var cleanContainer = document.createElement('div');
+                if(titleText) {{
+                    cleanContainer.innerHTML = '<h1 style="color: {title_color}; font-size: 1.5em; margin-bottom: 1em; text-align: center;">' + titleText + '</h1>' + content.innerHTML;
+                }} else {{
+                    cleanContainer.innerHTML = content.innerHTML;
+                }}
 
-            // Remove scripts and iframes inside the content
-            var scripts = document.body.getElementsByTagName('script');
-            while(scripts.length > 0) scripts[0].parentNode.removeChild(scripts[0]);
-            var iframes = document.body.getElementsByTagName('iframe');
-            while(iframes.length > 0) iframes[0].parentNode.removeChild(iframes[0]);
+                // 清空原页面
+                document.body.innerHTML = '';
+                document.body.appendChild(cleanContainer);
 
-            // Clean up unwanted tags by replacing with spans (safe way to strip links but keep text)
-            var as = document.body.getElementsByTagName('a');
-            while(as.length > 0) {{
-                var parent = as[0].parentNode;
-                var textNode = document.createTextNode(as[0].textContent);
-                parent.replaceChild(textNode, as[0]);
-            }}
+                // 删除不需要的标签 (script, iframe, 底部广告等)
+                var removeTags = ['script', 'iframe', 'style', 'noscript', 'header', 'footer'];
+                removeTags.forEach(function(tag) {{
+                    var elements = document.body.getElementsByTagName(tag);
+                    while(elements.length > 0) elements[0].parentNode.removeChild(elements[0]);
+                }});
 
-            // Styling
-            document.body.style.backgroundColor = '{bg_color}';
-            document.body.style.color = '{text_color}';
-            document.body.style.fontFamily = "'Microsoft YaHei', 'SimSun', sans-serif";
-            document.body.style.fontSize = '{self.current_font_size}px';
-            document.body.style.lineHeight = '1.8';
-            document.body.style.padding = '5% 15%';
-            document.body.style.margin = '0';
+                // 去除页面所有的链接，只保留文本 (防止误触跳转/广告)
+                var as = document.body.getElementsByTagName('a');
+                while(as.length > 0) {{
+                    var parent = as[0].parentNode;
+                    var textNode = document.createTextNode(as[0].textContent);
+                    parent.replaceChild(textNode, as[0]);
+                }}
 
-            // Style p tags
-            var ps = document.body.getElementsByTagName('p');
-            for(var i=0; i<ps.length; i++) {{
-                ps[i].style.marginBottom = '1.2em';
-                ps[i].style.textIndent = '2em';
+                // 应用全局样式
+                document.body.style.backgroundColor = '{bg_color}';
+                document.body.style.color = '{text_color}';
+                document.body.style.fontFamily = "'Microsoft YaHei', 'PingFang SC', sans-serif";
+                document.body.style.fontSize = '{self.current_font_size}px';
+                document.body.style.lineHeight = '1.8';
+                document.body.style.padding = '40px 10%';
+                document.body.style.margin = '0';
+
+                // 对所有段落应用排版
+                var ps = document.body.getElementsByTagName('p');
+                for(var i=0; i<ps.length; i++) {{
+                    ps[i].style.marginBottom = '1.2em';
+                    ps[i].style.textIndent = '2em';
+                    ps[i].style.color = '{text_color}'; // 强制覆盖段落原生颜色
+                }}
+
+                // 覆盖所有文本节点的颜色 (解决可能存在 span color="#xxx" 导致看不清的问题)
+                var allElements = document.body.getElementsByTagName('*');
+                for(var i=0; i<allElements.length; i++) {{
+                    allElements[i].style.color = '{text_color}';
+                    allElements[i].style.backgroundColor = 'transparent'; // 防止局部底色块干扰
+                }}
+
+                return "success";
+            }} catch(err) {{
+                return err.toString();
             }}
         }})();
         """
-        self.webview.page().runJavaScript(js_code)
+
+        # 执行脚本并清空状态
+        self.webview.page().runJavaScript(js_code, self._on_js_finished)
+
+    def _on_js_finished(self, result):
+        self.reader_status_label.setText("")
 
     def adjust_font(self, delta):
-        self.current_font_size += delta
-        self.apply_reader_style()
+        new_size = self.current_font_size + delta
+        if 14 <= new_size <= 40: # 限制字号范围
+            self.current_font_size = new_size
+            self.apply_reader_style()
 
     def toggle_theme(self):
         self.is_dark_mode = not self.is_dark_mode
         self.apply_reader_style()
-
-    def show_book_list(self):
-        self.content_stack.setCurrentIndex(0)
-        self.back_btn.hide()
-
-    def show_chapter_list(self):
-        self.content_stack.setCurrentIndex(1)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
