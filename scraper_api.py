@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 class AliceScraper:
     def __init__(self):
         self.scraper = cloudscraper.create_scraper()
-        self.base_url = 'https://www.alicesw.com'
+        self.base_url = 'https://www.alicesw.org'
 
     def get_category_list(self, category_id='64', page=1):
         url = f'{self.base_url}/lists/{category_id}.html'
@@ -18,13 +18,16 @@ class AliceScraper:
             soup = BeautifulSoup(res.text, 'html.parser')
             results = []
 
-            for li in soup.find_all('li', class_='two'):
-                a_tag = li.find('a', href=re.compile(r'/novel/\d+\.html'))
-                if a_tag:
-                    results.append({
-                        'url': a_tag['href'],
-                        'title': a_tag.text.strip()
-                    })
+            for a_tag in soup.find_all('a', href=re.compile(r'/novel/\d+\.html')):
+                # Filter out obvious non-novel links or empty text links
+                title = a_tag.text.strip()
+                if title and not title.startswith('<'):
+                    # Prevent duplicates
+                    if not any(r['url'] == a_tag['href'] for r in results):
+                        results.append({
+                            'url': a_tag['href'],
+                            'title': title
+                        })
 
             if not results: # Fallback using raw regex just in case
                 lines = res.text.split('\n')
