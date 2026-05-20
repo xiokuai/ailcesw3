@@ -18,13 +18,19 @@ class AliceScraper:
             soup = BeautifulSoup(res.text, 'html.parser')
             results = []
 
-            for li in soup.find_all('li', class_='two'):
+            for li in soup.find_all('li'):
                 a_tag = li.find('a', href=re.compile(r'/novel/\d+\.html'))
                 if a_tag:
-                    results.append({
-                        'url': a_tag['href'],
-                        'title': a_tag.text.strip()
-                    })
+                    title = a_tag.text.strip()
+                    span_tag = a_tag.find('span')
+                    if span_tag:
+                        title = title.replace(span_tag.text, '').strip()
+                    # avoid duplicates
+                    if not any(r['url'] == a_tag['href'] for r in results):
+                        results.append({
+                            'url': a_tag['href'],
+                            'title': title
+                        })
 
             if not results: # Fallback using raw regex just in case
                 lines = res.text.split('\n')
