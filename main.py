@@ -460,7 +460,7 @@ class MainWindow(QMainWindow):
         if not chapter_url: return
 
         self.content_stack.setCurrentIndex(2)
-        full_url = f"https://www.alicesw.com{chapter_url}"
+        full_url = f"https://www.alicesw.org{chapter_url}"
         self.headless_webview.load(QUrl(full_url))
 
     def show_loading_reader(self, is_loading):
