@@ -460,7 +460,7 @@ class MainWindow(QMainWindow):
         if not chapter_url: return
 
         self.content_stack.setCurrentIndex(2)
-        full_url = f"https://www.alicesw.com{chapter_url}"
+        full_url = f"https://www.alicesw.org{chapter_url}"
         self.headless_webview.load(QUrl(full_url))
 
     def show_loading_reader(self, is_loading):
@@ -480,7 +480,8 @@ class MainWindow(QMainWindow):
         js = """
         (function() {
             var title = document.querySelector('.title') ? document.querySelector('.title').innerText : '';
-            var content = document.querySelector('.article-content') ||
+            var content = document.querySelector('.read-content') ||
+                          document.querySelector('.article-content') ||
                           document.querySelector('.content') ||
                           document.querySelector('#content');
             if(!content) return "";
@@ -503,7 +504,13 @@ class MainWindow(QMainWindow):
                     if(t) resultHtml += "<p>" + t + "</p>";
                 }
             } else {
-                resultHtml += "<p>" + content.innerText + "</p>";
+                var htmlContent = content.innerHTML;
+                var parts = htmlContent.split(/<br\\s*\\/?>/i);
+                for(var i=0; i<parts.length; i++) {
+                    var t = parts[i].replace(/<[^>]+>/g, '').trim();
+                    if(t) resultHtml += "<p>" + t + "</p>";
+                }
+                if(!resultHtml) resultHtml += "<p>" + content.innerText + "</p>";
             }
             return resultHtml;
         })();
