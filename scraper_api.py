@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 class AliceScraper:
     def __init__(self):
         self.scraper = cloudscraper.create_scraper()
-        self.base_url = 'https://www.alicesw.com'
+        self.base_url = 'https://www.alicesw.org'
 
     def get_category_list(self, category_id='64', page=1):
         url = f'{self.base_url}/lists/{category_id}.html'
